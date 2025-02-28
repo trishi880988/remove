@@ -1,83 +1,60 @@
 import os
 import time
-import threading
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+import asyncio
 
-# Watermark function with advanced settings
-def add_watermark(input_video, output_video, watermark_text):
+# Watermark Function
+async def add_watermark(input_video, output_video, watermark_text):
     video = VideoFileClip(input_video)
-    
-    # Create watermark text
-    txt_clip = TextClip(watermark_text, fontsize=50, color='white', font='Arial', stroke_color='black', stroke_width=2)
-    txt_clip = txt_clip.set_position(('right', 'bottom')).set_duration(video.duration)
-    
-    # Combine video and watermark
+    txt_clip = TextClip(watermark_text, fontsize=50, color='white', font='Arial')
+    txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(video.duration)
     final_video = CompositeVideoClip([video, txt_clip])
-    final_video.write_videofile(output_video, codec='libx264', fps=video.fps, threads=4, preset='ultrafast')
+    final_video.write_videofile(output_video, codec='libx264', fps=video.fps)
+    video.close()
+    txt_clip.close()
+    final_video.close()
 
-# Start command
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text('👋 Welcome! Send me a video, and I will add a watermark to it.')
+# Start Command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Welcome! Send me a video, and I'll add a watermark to it.")
 
-# Handle video
-def handle_video(update: Update, context: CallbackContext):
-    video_file = update.message.video.get_file()
-    input_path = f"downloads/{video_file.file_id}.mp4"
-    output_path = f"downloads/watermarked_{video_file.file_id}.mp4"
-    
-    # Create downloads folder if not exists
-    os.makedirs("downloads", exist_ok=True)
-    
-    # Download video
-    video_file.download(input_path)
-    
-    update.message.reply_text("✅ Video received! Send the text you want as a watermark.")
-    context.user_data['video_path'] = input_path
-    context.user_data['output_path'] = output_path
+# Handle Video
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    video_file = await update.message.video.get_file()
+    await video_file.download_to_drive("input.mp4")
+    await update.message.reply_text("Send me the text you want as a watermark.")
+    context.user_data['video_path'] = "input.mp4"
 
-# Handle watermark text
-def handle_text(update: Update, context: CallbackContext):
+# Handle Text
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     watermark_text = update.message.text
-    input_path = context.user_data.get('video_path')
-    output_path = context.user_data.get('output_path')
+    await update.message.reply_text("Processing video... Please wait!")
+    start_time = time.time()
     
-    if not input_path:
-        update.message.reply_text("❌ No video found! Please send a video first.")
-        return
+    output_video = "output.mp4"
+    await asyncio.to_thread(add_watermark, context.user_data['video_path'], output_video, watermark_text)
     
-    update.message.reply_text("🔄 Processing your video... This may take some time.")
+    processing_time = time.time() - start_time
+    await update.message.reply_text(f"Video processed in {processing_time:.2f} seconds!")
+    await update.message.reply_video(video=open(output_video, 'rb'))
     
-    def process_video():
-        start_time = time.time()
-        add_watermark(input_path, output_path, watermark_text)
-        processing_time = time.time() - start_time
-        
-        update.message.reply_text(f'✅ Done! Processed in {processing_time:.2f} sec. Sending video...')
-        
-        with open(output_path, 'rb') as video_file:
-            update.message.reply_video(video=video_file)
-        
-        os.remove(input_path)
-        os.remove(output_path)
-    
-    thread = threading.Thread(target=process_video)
-    thread.start()
+    os.remove("input.mp4")
+    os.remove("output.mp4")
 
-# Main function
-def main():
+# Main Function
+async def main():
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    app = Application.builder().token(TOKEN).build()
     
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.video, handle_video))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-    
-    updater.start_polling()
-    updater.idle()
+    print("Bot is running...")
+    await app.run_polling()
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
