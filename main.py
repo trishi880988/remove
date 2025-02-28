@@ -1,56 +1,58 @@
 import os
-import time
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+import logging
+from telegram import Bot, Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# लॉग सेटअप
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Send me a video and I'll add a watermark.")
+# बॉट टोकन और डिफ़ॉल्ट टार्गेट चैट आईडी
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+bot = Bot(token=BOT_TOKEN)
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.video.get_file()
-    video_path = "input.mp4"
-    await file.download_to_drive(video_path)
+# चैट ID सेट करने का कमांड
+def set_target_chat(update: Update, context: CallbackContext):
+    global TARGET_CHAT_ID
+    TARGET_CHAT_ID = str(update.message.chat_id)
+    os.environ["TARGET_CHAT_ID"] = TARGET_CHAT_ID
+    update.message.reply_text(f"✅ Target Chat ID सेट कर दिया गया: `{TARGET_CHAT_ID}`")
 
-    await update.message.reply_text("Send the watermark text you want on the video.")
-    context.user_data['video_path'] = video_path
+# फॉरवर्ड करने का फंक्शन
+def forward_messages(update: Update, context: CallbackContext):
+    global TARGET_CHAT_ID
+    chat_id = update.message.chat_id
+    text = update.message.text.split()
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    watermark_text = update.message.text
-    video_path = context.user_data.get("video_path")
-    
-    if not video_path:
-        await update.message.reply_text("Please send a video first.")
+    if len(text) < 3:
+        update.message.reply_text("❌ कृपया पहले और आखिरी मेसेज का लिंक भेजें।\nउदाहरण: /forward first_link last_link")
         return
 
-    output_video = "output.mp4"
-    await update.message.reply_text("Processing your video...")
+    first_msg_id = int(text[1].split("/")[-1])
+    last_msg_id = int(text[2].split("/")[-1])
+    from_chat_id = chat_id
 
-    start_time = time.time()
-    add_watermark(video_path, output_video, watermark_text)
-    processing_time = time.time() - start_time
+    if not TARGET_CHAT_ID:
+        update.message.reply_text("❌ पहले /setchat कमांड से टार्गेट चैट सेट करें!")
+        return
 
-    await update.message.reply_text(f"Video processed in {processing_time:.2f} seconds!")
-    await update.message.reply_video(video=open(output_video, 'rb'))
+    for msg_id in range(first_msg_id + 1, last_msg_id):
+        try:
+            bot.forward_message(chat_id=TARGET_CHAT_ID, from_chat_id=from_chat_id, message_id=msg_id)
+        except Exception as e:
+            logging.error(f"⚠️ फ़ॉरवर्ड करने में दिक्कत: {e}")
 
-    os.remove(video_path)
-    os.remove(output_video)
+    update.message.reply_text("✅ सभी मेसेज सफलतापूर्वक फॉरवर्ड कर दिए गए!")
 
-def add_watermark(input_video, output_video, watermark_text):
-    video = VideoFileClip(input_video)
-    txt_clip = TextClip(watermark_text, fontsize=50, color='white', font='Arial').set_position(('center', 'bottom')).set_duration(video.duration)
-    final_video = CompositeVideoClip([video, txt_clip])
-    final_video.write_videofile(output_video, codec='libx264')
-
+# बॉट सेटअप
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    app.run_polling()
+    updater = Updater(token=BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("setchat", set_target_chat))  # चैट सेट करने का कमांड
+    dp.add_handler(CommandHandler("forward", forward_messages))  # फॉरवर्ड करने का कमांड
+
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
